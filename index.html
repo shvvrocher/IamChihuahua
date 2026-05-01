@@ -140,85 +140,94 @@ function bbox(landmarks, indices) {
 
 // ── 필터 렌더링 ────────────────────────────────────────────────
 function drawFilter(landmarks) {
-  const W = canvas.width, H = canvas.height;
-
-  // 얼굴 전체 bbox
-  const face = bbox(landmarks, IDX.FACE_OVAL);
+  const face     = bbox(landmarks, IDX.FACE_OVAL);
   const leftEye  = bbox(landmarks, IDX.LEFT_EYE);
   const rightEye = bbox(landmarks, IDX.RIGHT_EYE);
   const noseTip  = lm(landmarks, IDX.NOSE_TIP_CENTER[0]);
   const lipBox   = bbox(landmarks, IDX.LIPS_ALL);
   const mouthTop = lm(landmarks, IDX.MOUTH_OPEN_TOP[0]);
   const mouthBot = lm(landmarks, IDX.MOUTH_OPEN_BOTTOM[0]);
-
-  // 이마 기준점 (눈썹 위)
   const browLeft  = bbox(landmarks, IDX.LEFT_BROW);
   const browRight = bbox(landmarks, IDX.RIGHT_BROW);
-  const foreheadY = Math.min(browLeft.y, browRight.y);
   const faceCX    = face.cx;
 
-  // ── 1. 눈 확대 렌더링 — 정원(1:1) 강제 변환 ────────────────
-  // 눈의 가로 비율 무시, 정원으로 늘려서 치와와 튀어나온 눈 표현
+  const SQUISH = 0.78; // 세로 압축비 (낮을수록 더 찌부)
+  const SPREAD = 1.22; // 미간 넓히기
+
+  // 찌부 기준: 눈썹 라인 (이마는 고정, 그 아래만 압축)
+  const anchor = Math.min(browLeft.y, browRight.y) - face.h * 0.05;
+  const sqY    = y => anchor + (y - anchor) * SQUISH;
+  const spX    = x => faceCX + (x - faceCX) * SPREAD;
+
+  // ── 0. 실제 얼굴 픽셀 찌부 ───────────────────────────────
+  // 눈썹 아래~턱 영역을 캔버스에서 직접 압축해서 덮어씌움
+  const faceX   = face.x - face.w * 0.55;
+  const faceW   = face.w * 2.1;
+  const srcBotY = face.y + face.h + face.h * 0.12;
+  const srcH    = srcBotY - anchor;
+  const dstH    = srcH * SQUISH;
+
+  // 압축된 얼굴 영역 그리기
+  ctx.drawImage(canvas, faceX, anchor, faceW, srcH,
+                        faceX, anchor, faceW, dstH);
+  // 압축으로 생긴 아래쪽 빈 공간 → 턱 끝 픽셀을 늘려서 자연스럽게 채움
+  const gapH = srcH - dstH;
+  if (gapH > 1) {
+    ctx.drawImage(canvas, faceX, srcBotY - 3, faceW, 3,
+                          faceX, anchor + dstH, faceW, gapH);
+  }
+
+  // ── 1. 눈 확대 — 정원 + 미간 + 찌부된 캔버스에서 샘플링 ──
   for (const eyeBox of [leftEye, rightEye]) {
-    const r = eyeBox.w * 1.3; // 가로폭 기준 반지름 → 세로로 늘어나 정원됨
+    const srcCy = sqY(eyeBox.cy);  // 픽셀 찌부 후 눈이 있는 실제 y위치
+    const srcCx = eyeBox.cx;
+    const dstCx = spX(eyeBox.cx);  // 미간 벌리기
+    const r     = eyeBox.w * 1.3;
+    const srcEH = eyeBox.h * SQUISH; // 찌부된 눈 높이
     ctx.save();
     ctx.beginPath();
-    ctx.arc(eyeBox.cx, eyeBox.cy, r, 0, Math.PI * 2);
+    ctx.arc(dstCx, srcCy, r, 0, Math.PI * 2);
     ctx.clip();
     ctx.drawImage(canvas,
-      eyeBox.x - eyeBox.w * 0.1, eyeBox.y - eyeBox.h * 0.1,
-      eyeBox.w * 1.2,            eyeBox.h * 1.2,
-      eyeBox.cx - r,             eyeBox.cy - r,
-      r * 2,                     r * 2
+      srcCx - eyeBox.w * 0.1, srcCy - srcEH * 0.6,
+      eyeBox.w * 1.2,         srcEH * 1.4,
+      dstCx - r,              srcCy - r,
+      r * 2,                  r * 2
     );
     ctx.restore();
   }
 
-  // ── 2. 치와와 귀 (삼각형, 큰 귀) ─────────────────────────
-  const earW    = face.w * 0.45;
-  const earH    = face.h * 0.75;
-  // 정수리(landmark 10) 기준 - 귀 밑부분이 정수리에 붙고 위로 솟아오름
-  const headTopY = lm(landmarks, 10).y;
-  const earY    = headTopY - earH * 0.9;
+  // ── 2. 귀 ────────────────────────────────────────────────
+  const earW     = face.w * 0.45;
+  const earH     = face.h * 0.75;
+  const headTopY = sqY(lm(landmarks, 10).y);
+  const earY     = headTopY - earH * 0.9;
+  drawEar(faceCX - face.w * 0.38, earY, earW, earH, -0.18, false);
+  drawEar(faceCX + face.w * 0.38, earY, earW, earH,  0.18, true);
 
-  // 왼쪽 귀 (화면 기준)
-  const earLX = faceCX - face.w * 0.38;
-  drawEar(earLX, earY, earW, earH, -0.18, false);
-
-  // 오른쪽 귀
-  const earRX = faceCX + face.w * 0.38;
-  drawEar(earRX, earY, earW, earH, 0.18, true);
-
-  // ── 3. 까만 코 ──────────────────────────────────────────
+  // ── 3. 코 ────────────────────────────────────────────────
   const noseW = face.w * 0.18;
   const noseH = face.h * 0.10;
+  const noseY = sqY(noseTip.y);
   ctx.save();
   ctx.beginPath();
-  ctx.ellipse(noseTip.x, noseTip.y - noseH*0.1, noseW/2, noseH/2, 0, 0, Math.PI*2);
-  ctx.fillStyle = "#111";
-  ctx.fill();
-  // 콧구멍 하이라이트
+  ctx.ellipse(noseTip.x, noseY - noseH*0.1, noseW/2, noseH/2, 0, 0, Math.PI*2);
+  ctx.fillStyle = "#111"; ctx.fill();
   ctx.beginPath();
-  ctx.ellipse(noseTip.x - noseW*0.18, noseTip.y, noseW*0.13, noseH*0.28, -0.3, 0, Math.PI*2);
-  ctx.ellipse(noseTip.x + noseW*0.18, noseTip.y, noseW*0.13, noseH*0.28, 0.3, 0, Math.PI*2);
-  ctx.fillStyle = "#000";
-  ctx.fill();
-  // 코 반짝임
+  ctx.ellipse(noseTip.x - noseW*0.18, noseY, noseW*0.13, noseH*0.28, -0.3, 0, Math.PI*2);
+  ctx.ellipse(noseTip.x + noseW*0.18, noseY, noseW*0.13, noseH*0.28,  0.3, 0, Math.PI*2);
+  ctx.fillStyle = "#000"; ctx.fill();
   ctx.beginPath();
-  ctx.ellipse(noseTip.x - noseW*0.1, noseTip.y - noseH*0.25, noseW*0.07, noseH*0.1, -0.5, 0, Math.PI*2);
-  ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.fill();
+  ctx.ellipse(noseTip.x - noseW*0.1, noseY - noseH*0.25, noseW*0.07, noseH*0.1, -0.5, 0, Math.PI*2);
+  ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fill();
   ctx.restore();
 
-  // ── 4. 이빨 (입이 벌어진 경우에만) ─────────────────────
-  const mouthOpenness = mouthBot.y - mouthTop.y;
-  if (mouthOpenness > face.h * 0.015) {
-    drawTeeth(lipBox, mouthTop, mouthBot, mouthOpenness);
-  }
-
-  // ── 5. 얼굴 윤곽 살짝 왜곡 (스케일다운) ────────────────
-  // 실제 왜곡은 CSS transform 보다 canvas clip으로 처리
-  // (랜드마크 기반 필터가 이미 얼굴 위에 그려지므로 별도 처리 생략, 효과는 귀+눈 확대로 충분)
+  // ── 4. 이빨 ──────────────────────────────────────────────
+  const sqTop  = { ...mouthTop, y: sqY(mouthTop.y) };
+  const sqBot  = { ...mouthBot, y: sqY(mouthBot.y) };
+  const sqLip  = { ...lipBox, y: sqY(lipBox.y), cy: sqY(lipBox.cy) };
+  const openness = sqBot.y - sqTop.y;
+  if (openness > face.h * 0.015) drawTeeth(sqLip, sqTop, sqBot, openness);
 }
 
 function drawEar(tipX, tipY, w, h, lean, flip) {
