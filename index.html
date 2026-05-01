@@ -115,6 +115,42 @@ const ctx    = canvas.getContext("2d");
 const chiImg = new Image();
 chiImg.src   = "Chihuahua.webp";
 
+// 장미 이미지 (원본 로드 후 오프스크린 캔버스에서 치와와 잘라내고 흰 배경 제거)
+const roseImg = new Image();
+roseImg.crossOrigin = "anonymous";
+roseImg.src = "_ (1).jpeg";
+let roseCropped = null;
+
+roseImg.onload = () => {
+  const iw = roseImg.naturalWidth;
+  const ih = roseImg.naturalHeight;
+  // 장미(꽃+줄기)만 크롭: 이미지 좌측 치와와 몸통 제외, 상단 꽃+줄기 영역만
+  const sx = Math.floor(iw * 0.14);
+  const sy = Math.floor(ih * 0.02);
+  const sw = Math.floor(iw * 0.86);
+  const sh = Math.floor(ih * 0.58);
+
+  const oc = document.createElement("canvas");
+  oc.width  = sw;
+  oc.height = sh;
+  const ox = oc.getContext("2d");
+  ox.drawImage(roseImg, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  // 흰 배경 픽셀 제거
+  const id = ox.getImageData(0, 0, sw, sh);
+  const d  = id.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i+1], b = d[i+2];
+    if (r > 210 && g > 210 && b > 210) {
+      // 흰색~밝은 회색 → 투명
+      const brightness = (r + g + b) / 3;
+      d[i+3] = Math.max(0, Math.round((255 - brightness) * 2.2));
+    }
+  }
+  ox.putImageData(id, 0, 0);
+  roseCropped = oc;
+};
+
 let faceLandmarker = null;
 let running = false;
 
@@ -177,9 +213,11 @@ function drawFilter(landmarks) {
   }
 
   // ── 2. 치와와 귀 (삼각형, 큰 귀) ─────────────────────────
-  const earW  = face.w * 0.45;
-  const earH  = face.h * 0.7;
-  const earY  = foreheadY - earH * 0.65;
+  const earW    = face.w * 0.45;
+  const earH    = face.h * 0.75;
+  // 정수리(landmark 10) 기준 - 귀 밑부분이 정수리에 붙고 위로 솟아오름
+  const headTopY = lm(landmarks, 10).y;
+  const earY    = headTopY - earH * 0.9;
 
   // 왼쪽 귀 (화면 기준)
   const earLX = faceCX - face.w * 0.38;
@@ -210,10 +248,11 @@ function drawFilter(landmarks) {
   ctx.fill();
   ctx.restore();
 
-  // ── 4. 이빨 (입이 벌어진 경우에만) ─────────────────────
+  // ── 4. 이빨 + 장미 (입이 벌어진 경우에만) ──────────────
   const mouthOpenness = mouthBot.y - mouthTop.y;
   if (mouthOpenness > face.h * 0.015) {
     drawTeeth(lipBox, mouthTop, mouthBot, mouthOpenness);
+    drawRose(lipBox, mouthBot, face.w);
   }
 
   // ── 5. 얼굴 윤곽 살짝 왜곡 (스케일다운) ────────────────
@@ -282,6 +321,20 @@ function drawTeeth(lipBox, mouthTop, mouthBot, openness) {
   }
 
   ctx.restore();
+}
+
+function drawRose(lipBox, mouthBot, faceW) {
+  if (!roseCropped) return;
+
+  // 이빨 바로 아래 = 아랫입술 중앙에 장미 꽃 머리가 오도록
+  const roseW = faceW * 1.1;
+  const roseH = roseW * (roseCropped.height / roseCropped.width);
+
+  // 꽃 머리가 크롭 이미지 오른쪽 상단에 있으므로 오른쪽 끝을 입 중앙 오른편에 맞춤
+  const drawX = lipBox.cx - roseW * 0.72;
+  const drawY = mouthBot.y;          // 아랫입술 바로 아래
+
+  ctx.drawImage(roseCropped, drawX, drawY, roseW, roseH);
 }
 
 // ── 프레임 루프 ────────────────────────────────────────────────
