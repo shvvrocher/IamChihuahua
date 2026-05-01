@@ -157,22 +157,19 @@ function drawFilter(landmarks) {
   const foreheadY = Math.min(browLeft.y, browRight.y);
   const faceCX    = face.cx;
 
-  // ── 1. 눈 확대 렌더링 (2.3x) ─────────────────────────────
-  const EYE_SCALE = 2.3;
+  // ── 1. 눈 확대 렌더링 — 정원(1:1) 강제 변환 ────────────────
+  // 눈의 가로 비율 무시, 정원으로 늘려서 치와와 튀어나온 눈 표현
   for (const eyeBox of [leftEye, rightEye]) {
-    const ew = eyeBox.w * EYE_SCALE;
-    const eh = eyeBox.h * EYE_SCALE;
-    const ex = eyeBox.cx - ew / 2;
-    const ey = eyeBox.cy - eh / 2;
-    // 원본 캔버스에서 눈 영역 샘플링 후 확대 그리기
+    const r = eyeBox.w * 1.3; // 가로폭 기준 반지름 → 세로로 늘어나 정원됨
     ctx.save();
     ctx.beginPath();
-    ctx.ellipse(eyeBox.cx, eyeBox.cy, ew/2 + 6, eh/2 + 6, 0, 0, Math.PI*2);
+    ctx.arc(eyeBox.cx, eyeBox.cy, r, 0, Math.PI * 2);
     ctx.clip();
     ctx.drawImage(canvas,
-      eyeBox.x - eyeBox.w*0.15, eyeBox.y - eyeBox.h*0.15,
-      eyeBox.w * 1.3, eyeBox.h * 1.3,
-      ex - 4, ey - 4, ew + 8, eh + 8
+      eyeBox.x - eyeBox.w * 0.1, eyeBox.y - eyeBox.h * 0.1,
+      eyeBox.w * 1.2,            eyeBox.h * 1.2,
+      eyeBox.cx - r,             eyeBox.cy - r,
+      r * 2,                     r * 2
     );
     ctx.restore();
   }
