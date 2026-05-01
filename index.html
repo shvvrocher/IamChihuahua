@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>치와와 필터</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: sans-serif;
+    color: #fff;
+    overflow: hidden;
+  }
+  #startScreen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    position: absolute;
+    z-index: 10;
+  }
+  #startScreen h1 {
+    font-size: 2rem;
+    letter-spacing: 0.05em;
+  }
+  #startBtn {
+    background: #fff;
+    color: #0a0a0a;
+    border: none;
+    padding: 14px 40px;
+    font-size: 1.1rem;
+    font-weight: 700;
+    border-radius: 40px;
+    cursor: pointer;
+    transition: transform 0.15s, opacity 0.15s;
+  }
+  #startBtn:hover { transform: scale(1.05); opacity: 0.9; }
+  #loadingMsg {
+    font-size: 0.95rem;
+    color: #888;
+    display: none;
+  }
+  #canvasWrap {
+    display: none;
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+</style>
+</head>
+<body>
+
+<div id="startScreen">
+  <h1>🐶 치와와 필터</h1>
+  <button id="startBtn">시작하기</button>
+  <span id="loadingMsg">모델 로딩 중…</span>
+  <span id="errorMsg" style="color:#ff6b6b;font-size:0.9rem;max-width:360px;text-align:center;display:none"></span>
+</div>
+
+<div id="canvasWrap">
+  <canvas id="output"></canvas>
+</div>
+
+<video id="video" style="display:none" autoplay playsinline></video>
+
+<script type="module">
+import {
+  FaceLandmarker,
+  FilesetResolver,
+  DrawingUtils
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+// ── 랜드마크 인덱스 (MediaPipe 468점) ──────────────────────────
+const IDX = {
+  // 눈 외곽 (LEFT = 화면 오른쪽 눈)
+  LEFT_EYE:  [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246],
+  RIGHT_EYE: [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398],
+  // 홍채 중심 대략
+  LEFT_IRIS:  [468,469,470,471,472],
+  RIGHT_IRIS: [473,474,475,476,477],
+  // 눈썹
+  LEFT_BROW:  [70,63,105,66,107,55,65,52,53,46],
+  RIGHT_BROW: [300,293,334,296,336,285,295,282,283,276],
+  // 코
+  NOSE_TIP: [1,2,5,195,4,197,6,351,419,248,281,275,459,250,309,392,438,439,455,460,461,462,370,462,461,460,455,453,452,451,450,449,448,3,236,198,131,134,51,5],
+  NOSE_TIP_CENTER: [4],
+  NOSE_BRIDGE: [6, 197, 195, 5],
+  // 입
+  UPPER_LIP: [61,185,40,39,37,0,267,269,270,409,291],
+  LOWER_LIP: [146,91,181,84,17,314,405,321,375,291],
+  LIPS_ALL: [61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146],
+  MOUTH_OPEN_TOP: [13],
+  MOUTH_OPEN_BOTTOM: [14],
+  // 얼굴 윤곽
+  FACE_OVAL: [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109]
+};
+
+const video  = document.getElementById("video");
+const canvas = document.getElementById("output");
+const ctx    = canvas.getContext("2d");
+
+// 치와와 이미지
+const chiImg = new Image();
+chiImg.src   = "Chihuahua.webp";
+
+let faceLandmarker = null;
+let running = false;
+
+// ── 유틸 ──────────────────────────────────────────────────────
+function lm(landmarks, idx) {
+  return { x: landmarks[idx].x * canvas.width, y: landmarks[idx].y * canvas.height };
+}
+
+function bbox(landmarks, indices) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const i of indices) {
+    const p = landmarks[i];
+    const x = p.x * canvas.width;
+    const y = p.y * canvas.height;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY, cx: (minX+maxX)/2, cy: (minY+maxY)/2 };
+}
+
+// ── 필터 렌더링 ────────────────────────────────────────────────
+function drawFilter(landmarks) {
+  const W = canvas.width, H = canvas.height;
+
+  // 얼굴 전체 bbox
+  const face = bbox(landmarks, IDX.FACE_OVAL);
+  const leftEye  = bbox(landmarks, IDX.LEFT_EYE);
+  const rightEye = bbox(landmarks, IDX.RIGHT_EYE);
+  const noseTip  = lm(landmarks, IDX.NOSE_TIP_CENTER[0]);
+  const lipBox   = bbox(landmarks, IDX.LIPS_ALL);
+  const mouthTop = lm(landmarks, IDX.MOUTH_OPEN_TOP[0]);
+  const mouthBot = lm(landmarks, IDX.MOUTH_OPEN_BOTTOM[0]);
+
+  // 이마 기준점 (눈썹 위)
+  const browLeft  = bbox(landmarks, IDX.LEFT_BROW);
+  const browRight = bbox(landmarks, IDX.RIGHT_BROW);
+  const foreheadY = Math.min(browLeft.y, browRight.y);
+  const faceCX    = face.cx;
+
+  // ── 1. 눈 확대 렌더링 (2.3x) ─────────────────────────────
+  const EYE_SCALE = 2.3;
+  for (const eyeBox of [leftEye, rightEye]) {
+    const ew = eyeBox.w * EYE_SCALE;
+    const eh = eyeBox.h * EYE_SCALE;
+    const ex = eyeBox.cx - ew / 2;
+    const ey = eyeBox.cy - eh / 2;
+    // 원본 캔버스에서 눈 영역 샘플링 후 확대 그리기
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(eyeBox.cx, eyeBox.cy, ew/2 + 6, eh/2 + 6, 0, 0, Math.PI*2);
+    ctx.clip();
+    ctx.drawImage(canvas,
+      eyeBox.x - eyeBox.w*0.15, eyeBox.y - eyeBox.h*0.15,
+      eyeBox.w * 1.3, eyeBox.h * 1.3,
+      ex - 4, ey - 4, ew + 8, eh + 8
+    );
+    ctx.restore();
+  }
+
+  // ── 2. 치와와 귀 (삼각형, 큰 귀) ─────────────────────────
+  const earW  = face.w * 0.45;
+  const earH  = face.h * 0.7;
+  const earY  = foreheadY - earH * 0.65;
+
+  // 왼쪽 귀 (화면 기준)
+  const earLX = faceCX - face.w * 0.38;
+  drawEar(earLX, earY, earW, earH, -0.18, false);
+
+  // 오른쪽 귀
+  const earRX = faceCX + face.w * 0.38;
+  drawEar(earRX, earY, earW, earH, 0.18, true);
+
+  // ── 3. 까만 코 ──────────────────────────────────────────
+  const noseW = face.w * 0.18;
+  const noseH = face.h * 0.10;
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(noseTip.x, noseTip.y - noseH*0.1, noseW/2, noseH/2, 0, 0, Math.PI*2);
+  ctx.fillStyle = "#111";
+  ctx.fill();
+  // 콧구멍 하이라이트
+  ctx.beginPath();
+  ctx.ellipse(noseTip.x - noseW*0.18, noseTip.y, noseW*0.13, noseH*0.28, -0.3, 0, Math.PI*2);
+  ctx.ellipse(noseTip.x + noseW*0.18, noseTip.y, noseW*0.13, noseH*0.28, 0.3, 0, Math.PI*2);
+  ctx.fillStyle = "#000";
+  ctx.fill();
+  // 코 반짝임
+  ctx.beginPath();
+  ctx.ellipse(noseTip.x - noseW*0.1, noseTip.y - noseH*0.25, noseW*0.07, noseH*0.1, -0.5, 0, Math.PI*2);
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.fill();
+  ctx.restore();
+
+  // ── 4. 이빨 (입이 벌어진 경우에만) ─────────────────────
+  const mouthOpenness = mouthBot.y - mouthTop.y;
+  if (mouthOpenness > face.h * 0.015) {
+    drawTeeth(lipBox, mouthTop, mouthBot, mouthOpenness);
+  }
+
+  // ── 5. 얼굴 윤곽 살짝 왜곡 (스케일다운) ────────────────
+  // 실제 왜곡은 CSS transform 보다 canvas clip으로 처리
+  // (랜드마크 기반 필터가 이미 얼굴 위에 그려지므로 별도 처리 생략, 효과는 귀+눈 확대로 충분)
+}
+
+function drawEar(tipX, tipY, w, h, lean, flip) {
+  ctx.save();
+  ctx.translate(tipX, tipY + h);
+
+  // 바깥쪽 귀 (황갈색)
+  ctx.beginPath();
+  ctx.moveTo(-w/2, 0);
+  ctx.quadraticCurveTo(-w/2 + w*lean, -h*0.5, w*lean*0.5, -h);
+  ctx.quadraticCurveTo(w/2 + w*lean, -h*0.5, w/2, 0);
+  ctx.closePath();
+  ctx.fillStyle = "#c8923a";
+  ctx.fill();
+  ctx.strokeStyle = "#a07030";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // 안쪽 귀 (핑크)
+  const innerScale = 0.55;
+  ctx.beginPath();
+  ctx.moveTo(-w/2 * innerScale, -h * 0.08);
+  ctx.quadraticCurveTo((-w/2 + w*lean)*innerScale, -h*0.5, w*lean*0.5*innerScale, -h*0.88);
+  ctx.quadraticCurveTo((w/2 + w*lean)*innerScale, -h*0.5, w/2*innerScale, -h * 0.08);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(255, 180, 180, 0.75)";
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawTeeth(lipBox, mouthTop, mouthBot, openness) {
+  const tx = lipBox.x;
+  const ty = mouthTop.y;
+  const tw = lipBox.w;
+  const numTeeth = 7;
+  const toothW = tw / numTeeth;
+  const toothH = Math.min(openness * 0.85, lipBox.h * 0.7);
+
+  ctx.save();
+  // 클립을 입 영역으로 제한
+  ctx.beginPath();
+  ctx.rect(tx - 4, ty - 2, tw + 8, openness + 4);
+  ctx.clip();
+
+  for (let i = 0; i < numTeeth; i++) {
+    const tx2 = tx + i * toothW;
+    const center = tx2 + toothW / 2;
+
+    ctx.beginPath();
+    ctx.moveTo(tx2 + 1, ty);
+    ctx.lineTo(tx2 + 1, ty + toothH * 0.6);
+    ctx.quadraticCurveTo(center, ty + toothH, tx2 + toothW - 1, ty + toothH * 0.6);
+    ctx.lineTo(tx2 + toothW - 1, ty);
+    ctx.closePath();
+    ctx.fillStyle = "#f5f5ea";
+    ctx.fill();
+    ctx.strokeStyle = "#ccc";
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// ── 프레임 루프 ────────────────────────────────────────────────
+let lastVideoTime = -1;
+
+async function renderLoop() {
+  if (!running) return;
+
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    // 좌우 반전 (거울 모드)
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    const result = faceLandmarker.detectForVideo(video, performance.now());
+
+    if (result.faceLandmarks && result.faceLandmarks.length > 0) {
+      for (const landmarks of result.faceLandmarks) {
+        // 랜드마크도 좌우 반전 보정
+        const mirrored = landmarks.map(p => ({ ...p, x: 1 - p.x }));
+        drawFilter(mirrored);
+      }
+    }
+  }
+
+  requestAnimationFrame(renderLoop);
+}
+
+// ── 초기화 ────────────────────────────────────────────────────
+function showError(msg) {
+  const el = document.getElementById("errorMsg");
+  el.textContent = msg;
+  el.style.display = "block";
+  document.getElementById("loadingMsg").style.display = "none";
+  document.getElementById("startBtn").disabled = false;
+  document.getElementById("startBtn").textContent = "다시 시도";
+}
+
+function setStatus(msg) {
+  document.getElementById("loadingMsg").textContent = msg;
+}
+
+document.getElementById("startBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("startBtn");
+  btn.disabled = true;
+  document.getElementById("loadingMsg").style.display = "block";
+  document.getElementById("errorMsg").style.display = "none";
+
+  try {
+    setStatus("① WASM 로딩 중… (jsdelivr CDN)");
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+
+    setStatus("② 얼굴 인식 모델 다운로드 중… (약 4MB, 잠시 기다려 주세요)");
+    // GPU 먼저 시도, 실패하면 CPU로 폴백
+    try {
+      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+          delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        numFaces: 2,
+        outputFaceBlendshapes: false,
+        outputFacialTransformationMatrixes: false
+      });
+    } catch (gpuErr) {
+      console.warn("GPU 초기화 실패, CPU로 재시도:", gpuErr);
+      setStatus("② GPU 불가 → CPU 모드로 재시도 중…");
+      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+          delegate: "CPU"
+        },
+        runningMode: "VIDEO",
+        numFaces: 2,
+        outputFaceBlendshapes: false,
+        outputFacialTransformationMatrixes: false
+      });
+    }
+
+    setStatus("③ 카메라 연결 중…");
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+    } catch (camErr) {
+      showError("카메라 접근이 거부됐어요. 브라우저 주소창 옆 카메라 아이콘을 눌러 허용해 주세요.");
+      return;
+    }
+
+    video.srcObject = stream;
+    await new Promise(r => video.addEventListener("loadeddata", r, { once: true }));
+
+    document.getElementById("startScreen").style.display = "none";
+    document.getElementById("canvasWrap").style.display  = "block";
+
+    running = true;
+    renderLoop();
+  } catch (err) {
+    console.error(err);
+    showError(`오류 발생: ${err.message}\n\n네트워크 문제라면 잠시 후 다시 시도해 주세요. file:// 로 열었다면 로컬 서버(python3 -m http.server)가 필요해요.`);
+  }
+});
+</script>
+</body>
+</html>
