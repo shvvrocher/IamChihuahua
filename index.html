@@ -115,41 +115,6 @@ const ctx    = canvas.getContext("2d");
 const chiImg = new Image();
 chiImg.src   = "Chihuahua.webp";
 
-// 장미 이미지 (원본 로드 후 오프스크린 캔버스에서 치와와 잘라내고 흰 배경 제거)
-const roseImg = new Image();
-roseImg.crossOrigin = "anonymous";
-roseImg.src = "_ (1).jpeg";
-let roseCropped = null;
-
-roseImg.onload = () => {
-  const iw = roseImg.naturalWidth;
-  const ih = roseImg.naturalHeight;
-  // 장미(꽃+줄기)만 크롭: 이미지 좌측 치와와 몸통 제외, 상단 꽃+줄기 영역만
-  const sx = Math.floor(iw * 0.14);
-  const sy = Math.floor(ih * 0.02);
-  const sw = Math.floor(iw * 0.86);
-  const sh = Math.floor(ih * 0.58);
-
-  const oc = document.createElement("canvas");
-  oc.width  = sw;
-  oc.height = sh;
-  const ox = oc.getContext("2d");
-  ox.drawImage(roseImg, sx, sy, sw, sh, 0, 0, sw, sh);
-
-  // 흰 배경 픽셀 제거
-  const id = ox.getImageData(0, 0, sw, sh);
-  const d  = id.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const r = d[i], g = d[i+1], b = d[i+2];
-    if (r > 210 && g > 210 && b > 210) {
-      // 흰색~밝은 회색 → 투명
-      const brightness = (r + g + b) / 3;
-      d[i+3] = Math.max(0, Math.round((255 - brightness) * 2.2));
-    }
-  }
-  ox.putImageData(id, 0, 0);
-  roseCropped = oc;
-};
 
 let faceLandmarker = null;
 let running = false;
@@ -248,11 +213,10 @@ function drawFilter(landmarks) {
   ctx.fill();
   ctx.restore();
 
-  // ── 4. 이빨 + 장미 (입이 벌어진 경우에만) ──────────────
+  // ── 4. 이빨 (입이 벌어진 경우에만) ─────────────────────
   const mouthOpenness = mouthBot.y - mouthTop.y;
   if (mouthOpenness > face.h * 0.015) {
     drawTeeth(lipBox, mouthTop, mouthBot, mouthOpenness);
-    drawRose(lipBox, mouthBot, face.w);
   }
 
   // ── 5. 얼굴 윤곽 살짝 왜곡 (스케일다운) ────────────────
@@ -264,27 +228,103 @@ function drawEar(tipX, tipY, w, h, lean, flip) {
   ctx.save();
   ctx.translate(tipX, tipY + h);
 
-  // 바깥쪽 귀 (황갈색)
-  ctx.beginPath();
-  ctx.moveTo(-w/2, 0);
-  ctx.quadraticCurveTo(-w/2 + w*lean, -h*0.5, w*lean*0.5, -h);
-  ctx.quadraticCurveTo(w/2 + w*lean, -h*0.5, w/2, 0);
-  ctx.closePath();
-  ctx.fillStyle = "#c8923a";
-  ctx.fill();
-  ctx.strokeStyle = "#a07030";
-  ctx.lineWidth = 2;
-  ctx.stroke();
+  // ── 귀 외곽 경로 ──
+  const makeOuterPath = () => {
+    const p = new Path2D();
+    p.moveTo(-w/2, 0);
+    p.quadraticCurveTo(-w/2 + w*lean, -h*0.5, w*lean*0.5, -h);
+    p.quadraticCurveTo(w/2 + w*lean, -h*0.5, w/2, 0);
+    p.closePath();
+    return p;
+  };
+  const outerPath = makeOuterPath();
+  const tipCX = w * lean * 0.5;
 
-  // 안쪽 귀 (핑크)
-  const innerScale = 0.55;
-  ctx.beginPath();
-  ctx.moveTo(-w/2 * innerScale, -h * 0.08);
-  ctx.quadraticCurveTo((-w/2 + w*lean)*innerScale, -h*0.5, w*lean*0.5*innerScale, -h*0.88);
-  ctx.quadraticCurveTo((w/2 + w*lean)*innerScale, -h*0.5, w/2*innerScale, -h * 0.08);
-  ctx.closePath();
-  ctx.fillStyle = "rgba(255, 180, 180, 0.75)";
-  ctx.fill();
+  // 1) 기본 베이스 컬러 (짙은 갈색)
+  ctx.fillStyle = "#7a4510";
+  ctx.fill(outerPath);
+
+  // 2) 광원 그라디언트: 왼쪽 위에서 빛이 들어오는 느낌
+  const lightGrad = ctx.createLinearGradient(tipCX - w*0.3, -h, w*0.5, 0);
+  lightGrad.addColorStop(0,   "#f0b060"); // 빛 받는 귀 끝
+  lightGrad.addColorStop(0.35,"#d4903a"); // 중간 황갈
+  lightGrad.addColorStop(0.7, "#a06020"); // 중간 어두운 면
+  lightGrad.addColorStop(1,   "#5a3008"); // 가장자리 어두움
+  ctx.fillStyle = lightGrad;
+  ctx.fill(outerPath);
+
+  // 3) 측면 앰비언트 오클루전 (양 가장자리를 어둡게)
+  const sideGrad = ctx.createLinearGradient(-w/2, 0, w/2, 0);
+  sideGrad.addColorStop(0,    "rgba(0,0,0,0.45)");
+  sideGrad.addColorStop(0.18, "rgba(0,0,0,0)");
+  sideGrad.addColorStop(0.82, "rgba(0,0,0,0)");
+  sideGrad.addColorStop(1,    "rgba(0,0,0,0.35)");
+  ctx.fillStyle = sideGrad;
+  ctx.fill(outerPath);
+
+  // 4) 귀 끝 하이라이트 (반짝이는 털 느낌)
+  const tipGrad = ctx.createRadialGradient(tipCX, -h, 0, tipCX, -h*0.7, h*0.45);
+  tipGrad.addColorStop(0,   "rgba(255,220,140,0.55)");
+  tipGrad.addColorStop(0.5, "rgba(255,200,100,0.15)");
+  tipGrad.addColorStop(1,   "rgba(0,0,0,0)");
+  ctx.fillStyle = tipGrad;
+  ctx.fill(outerPath);
+
+  // 5) 털 스트로크 (결정론적 sin/cos 값으로 프레임마다 안 흔들림)
+  ctx.save();
+  ctx.clip(outerPath);
+  const numFur = 52;
+  for (let i = 0; i < numFur; i++) {
+    const t  = i / numFur;
+    // 베이스 시작점: 하단 호를 따라 분포
+    const bx = -w/2 + w * t;
+    const by = 0;
+    // 털 길이 & 방향: 귀 끝 방향으로 향하되 살짝 흔들
+    const len    = h * (0.45 + Math.abs(Math.sin(i * 2.3)) * 0.35);
+    const sway   = Math.sin(i * 3.7) * w * 0.07;
+    const ex     = bx * (1 - len/h) + tipCX * (len/h) + sway;
+    const ey     = -len;
+    const mx     = (bx + ex) / 2 + Math.cos(i * 5.1) * w * 0.05;
+    const my     = (by + ey) / 2;
+    const alpha  = 0.13 + Math.abs(Math.sin(i * 1.9)) * 0.12;
+    const dark   = i % 3 === 0; // 일부 털은 더 짙게
+    ctx.beginPath();
+    ctx.moveTo(bx, by);
+    ctx.quadraticCurveTo(mx, my, ex, ey);
+    ctx.strokeStyle = dark ? `rgba(50,22,3,${alpha*1.4})` : `rgba(80,38,8,${alpha})`;
+    ctx.lineWidth = 0.6 + Math.abs(Math.sin(i * 4.1)) * 0.7;
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // 6) 외곽 테두리 (얇고 어두운 윤곽선)
+  ctx.strokeStyle = "#3a1c04";
+  ctx.lineWidth = 1.5;
+  ctx.stroke(outerPath);
+
+  // ── 안쪽 귀 (핑크 입체) ──
+  const is = 0.55; // inner scale
+  const innerPath = new Path2D();
+  innerPath.moveTo(-w/2 * is, -h * 0.08);
+  innerPath.quadraticCurveTo((-w/2 + w*lean)*is, -h*0.5, tipCX*is, -h*0.87);
+  innerPath.quadraticCurveTo((w/2 + w*lean)*is,  -h*0.5, w/2*is,  -h*0.08);
+  innerPath.closePath();
+
+  // 기본 핑크
+  const pinkGrad = ctx.createLinearGradient(tipCX*is, -h*0.87, 0, -h*0.08);
+  pinkGrad.addColorStop(0,   "#ffb8c8"); // 밝은 끝
+  pinkGrad.addColorStop(0.45,"#e8788a"); // 중간 진한 핑크
+  pinkGrad.addColorStop(1,   "#c05068"); // 어두운 기저
+  ctx.fillStyle = pinkGrad;
+  ctx.fill(innerPath);
+
+  // 안쪽 광택 하이라이트
+  const pinkHL = ctx.createRadialGradient(tipCX*is*0.4, -h*0.52, 0, tipCX*is*0.4, -h*0.52, w*0.22);
+  pinkHL.addColorStop(0,   "rgba(255,255,255,0.45)");
+  pinkHL.addColorStop(0.6, "rgba(255,255,255,0.1)");
+  pinkHL.addColorStop(1,   "rgba(255,255,255,0)");
+  ctx.fillStyle = pinkHL;
+  ctx.fill(innerPath);
 
   ctx.restore();
 }
@@ -293,48 +333,85 @@ function drawTeeth(lipBox, mouthTop, mouthBot, openness) {
   const tx = lipBox.x;
   const ty = mouthTop.y;
   const tw = lipBox.w;
-  const numTeeth = 7;
-  const toothW = tw / numTeeth;
-  const toothH = Math.min(openness * 0.85, lipBox.h * 0.7);
+  const numTeeth = 6;
+  const toothW   = tw / numTeeth;
+  const toothH   = Math.min(openness * 0.82, lipBox.h * 0.68);
 
   ctx.save();
-  // 클립을 입 영역으로 제한
   ctx.beginPath();
-  ctx.rect(tx - 4, ty - 2, tw + 8, openness + 4);
+  ctx.rect(tx - 2, ty - 6, tw + 4, openness + 6);
   ctx.clip();
 
-  for (let i = 0; i < numTeeth; i++) {
-    const tx2 = tx + i * toothW;
-    const center = tx2 + toothW / 2;
+  // 잇몸 (치아 위 핑크 살)
+  const gumGrad = ctx.createLinearGradient(0, ty - 6, 0, ty + 4);
+  gumGrad.addColorStop(0, "#b03050");
+  gumGrad.addColorStop(1, "#d05070");
+  ctx.fillStyle = gumGrad;
+  ctx.fillRect(tx - 2, ty - 6, tw + 4, 10);
 
-    ctx.beginPath();
-    ctx.moveTo(tx2 + 1, ty);
-    ctx.lineTo(tx2 + 1, ty + toothH * 0.6);
-    ctx.quadraticCurveTo(center, ty + toothH, tx2 + toothW - 1, ty + toothH * 0.6);
-    ctx.lineTo(tx2 + toothW - 1, ty);
-    ctx.closePath();
-    ctx.fillStyle = "#f5f5ea";
-    ctx.fill();
-    ctx.strokeStyle = "#ccc";
+  for (let i = 0; i < numTeeth; i++) {
+    const x0 = tx + i * toothW + 1;
+    const x1 = x0 + toothW - 2;
+    const cx = (x0 + x1) / 2;
+
+    // 치아 경로
+    const tooth = new Path2D();
+    tooth.moveTo(x0, ty);
+    tooth.lineTo(x0, ty + toothH * 0.62);
+    tooth.quadraticCurveTo(cx, ty + toothH, x1, ty + toothH * 0.62);
+    tooth.lineTo(x1, ty);
+    tooth.closePath();
+
+    // 1) 기본 아이보리 베이스
+    ctx.fillStyle = "#f0ece0";
+    ctx.fill(tooth);
+
+    // 2) 좌우 명암 (원기둥 느낌)
+    const sideGrad = ctx.createLinearGradient(x0, 0, x1, 0);
+    sideGrad.addColorStop(0,    "rgba(0,0,0,0.28)");   // 왼쪽 그림자
+    sideGrad.addColorStop(0.22, "rgba(0,0,0,0)");
+    sideGrad.addColorStop(0.5,  "rgba(255,255,255,0.38)"); // 중앙 하이라이트
+    sideGrad.addColorStop(0.78, "rgba(0,0,0,0)");
+    sideGrad.addColorStop(1,    "rgba(0,0,0,0.22)");   // 오른쪽 그림자
+    ctx.fillStyle = sideGrad;
+    ctx.fill(tooth);
+
+    // 3) 상하 명암 (위가 밝고 끝이 어두움)
+    const vertGrad = ctx.createLinearGradient(0, ty, 0, ty + toothH);
+    vertGrad.addColorStop(0,   "rgba(255,255,255,0.5)");
+    vertGrad.addColorStop(0.2, "rgba(255,255,255,0)");
+    vertGrad.addColorStop(0.75,"rgba(0,0,0,0)");
+    vertGrad.addColorStop(1,   "rgba(0,0,0,0.3)");
+    ctx.fillStyle = vertGrad;
+    ctx.fill(tooth);
+
+    // 4) 스페큘러 하이라이트 (작은 흰 타원)
+    ctx.save();
+    ctx.clip(tooth);
+    const hlGrad = ctx.createRadialGradient(cx - toothW*0.08, ty + toothH*0.12, 0,
+                                             cx - toothW*0.08, ty + toothH*0.12, toothW*0.28);
+    hlGrad.addColorStop(0,   "rgba(255,255,255,0.75)");
+    hlGrad.addColorStop(0.5, "rgba(255,255,255,0.2)");
+    hlGrad.addColorStop(1,   "rgba(255,255,255,0)");
+    ctx.fillStyle = hlGrad;
+    ctx.fillRect(x0, ty, toothW, toothH);
+    ctx.restore();
+
+    // 5) 치아 윤곽 (얇고 어두운 선)
+    ctx.strokeStyle = "rgba(100,85,65,0.5)";
     ctx.lineWidth = 0.8;
+    ctx.stroke(tooth);
+
+    // 6) 치아 사이 어두운 홈
+    ctx.beginPath();
+    ctx.moveTo(x1 + 0.4, ty);
+    ctx.lineTo(x1 + 0.4, ty + toothH * 0.55);
+    ctx.strokeStyle = "rgba(40,20,10,0.55)";
+    ctx.lineWidth = 1.2;
     ctx.stroke();
   }
 
   ctx.restore();
-}
-
-function drawRose(lipBox, mouthBot, faceW) {
-  if (!roseCropped) return;
-
-  // 이빨 바로 아래 = 아랫입술 중앙에 장미 꽃 머리가 오도록
-  const roseW = faceW * 1.1;
-  const roseH = roseW * (roseCropped.height / roseCropped.width);
-
-  // 꽃 머리가 크롭 이미지 오른쪽 상단에 있으므로 오른쪽 끝을 입 중앙 오른편에 맞춤
-  const drawX = lipBox.cx - roseW * 0.72;
-  const drawY = mouthBot.y;          // 아랫입술 바로 아래
-
-  ctx.drawImage(roseCropped, drawX, drawY, roseW, roseH);
 }
 
 // ── 프레임 루프 ────────────────────────────────────────────────
