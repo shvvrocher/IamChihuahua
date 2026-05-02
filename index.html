@@ -189,7 +189,7 @@ function drawFilter(landmarks) {
     ctx.arc(dstCx, srcCy, r, 0, Math.PI * 2);
     ctx.clip();
     ctx.drawImage(canvas,
-      srcCx - eyeBox.w * 0.1, srcCy - srcEH * 0.6,
+      srcCx - eyeBox.w * 0.6, srcCy - srcEH * 0.6,
       eyeBox.w * 1.2,         srcEH * 1.4,
       dstCx - r,              srcCy - r,
       r * 2,                  r * 2
